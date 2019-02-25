@@ -33,58 +33,13 @@
 #include <cstddef>
 #include <iterator>
 #include <stdexcept>
+#include <type_traits>
 
 namespace Exiv2
 {
+#ifndef PARSED_BY_DOXYGEN
     namespace Internal
     {
-        // TODO: remove these custom implementations once we have C++11
-        template <class T>
-        struct remove_const
-        {
-            typedef T type;
-        };
-
-        template <class T>
-        struct remove_const<const T>
-        {
-            typedef T type;
-        };
-
-        template <class T>
-        struct remove_volatile
-        {
-            typedef T type;
-        };
-        template <class T>
-        struct remove_volatile<volatile T>
-        {
-            typedef T type;
-        };
-        template <class T>
-        struct remove_cv
-        {
-            typedef typename remove_const<typename remove_volatile<T>::type>::type type;
-        };
-
-        template <class T>
-        struct remove_pointer
-        {
-            typedef T type;
-        };
-
-        template <class T>
-        struct remove_pointer<T*>
-        {
-            typedef T type;
-        };
-
-        template <class T>
-        struct remove_pointer<T* const>
-        {
-            typedef T type;
-        };
-
         /*!
          * Common base class of all slice implementations.
          *
@@ -114,7 +69,7 @@ namespace Exiv2
              * Throw an exception when index is too large.
              *
              * @throw std::out_of_range when `index` will access an element
-             * outside of the slice
+             *     outside of the slice
              */
             inline void rangeCheck(size_t index) const
             {
@@ -124,361 +79,44 @@ namespace Exiv2
             }
 
             /*!
+             * Modify begin & end in-place so that they are the correct bounds
+             * of the new sub-slice.
+             *
+             * This is a helper function for the subSlice() member functions: it
+             * calculates the bounds with respect to the original
+             * container/pointer.
+             *
+             * @param[in,out] begin, end new bounds of a subSlice, this function
+             *     adds the current `begin_` and `end_` to these safely.
+             *
+             * @throw std::out_of_range when `begin` or `end` will access an
+             *     element outside of the slice
+             */
+            inline void calculateSubSliceBounds(size_t& begin, size_t& end) const
+            {
+                // end == size() is a legal value, since end is the first element beyond the slice
+                // end == 0 is not a legal value
+                if ((begin >= size()) || (end > size())) {
+                    throw std::out_of_range("sub-Slice index out of range");
+                }
+
+                // additions are safe, begin and end are smaller than size()
+                begin += this->begin_;
+                end += this->begin_;
+
+                if (end > this->end_) {
+                    throw std::out_of_range("sub-Slice index out of range");
+                }
+            }
+
+            /*!
              * lower and upper bounds of the slice with respect to the
              * container/array stored in storage_
              */
             const size_t begin_, end_;
         };
-
-        /*!
-         * @brief This class provides the public-facing const-qualified methods
-         * of a slice.
-         *
-         * The public methods are implemented in a generic fashion using a
-         * storage_type. This type contains the actual reference to the data to
-         * which the slice points and provides the following methods:
-         *
-         * - (const) value_type& unsafeAt(size_t index) (const)
-         *   Return the value at the given index of the underlying container,
-         *   without promising to perform a range check and without any
-         *   knowledge of the slices' size
-         *
-         * - const_iterator/iterator unsafeGetIteratorAt(size_t index) (const)
-         *   Return a (constant) iterator at the given index of the underlying
-         *   container. Again, no range checks are promised.
-         *
-         * - Constructor(data_type& data, size_t begin, size_t end)
-         *   Can use `begin` & `end` to perform range checks on `data`, but
-         *   should not store both values. Must not take ownership of `data`!
-         *
-         * - Must save data as a public member named `data_`.
-         *
-         * - Must provide appropriate typedefs for iterator, const_iterator and
-         *   value_type
-         */
-        template <template <typename data_type> class storage_type, typename data_type>
-        struct ConstSliceBase : SliceBase
-        {
-            typedef typename storage_type<data_type>::iterator iterator;
-            typedef typename storage_type<data_type>::const_iterator const_iterator;
-            typedef typename storage_type<data_type>::value_type value_type;
-
-            /*!
-             * Default contructor, requires begin to be smaller than end,
-             * otherwise an exception is thrown. Also forwards all parameters to
-             * the constructor of storage_
-             */
-            ConstSliceBase(data_type& data, size_t begin, size_t end)
-                : SliceBase(begin, end), storage_(data, begin, end)
-            {
-            }
-
-            /*!
-             * Obtain a constant reference to the element with the specified
-             * index in the slice.
-             *
-             * @throw std::out_of_range when index is out of bounds of the slice
-             */
-            const value_type& at(size_t index) const
-            {
-                rangeCheck(index);
-                // we know: begin_ < end <= size() <= SIZE_T_MAX
-                // and: index < end - begin
-                // thus: index + begin < end <= SIZE_T_MAX
-                // => no overflow is possible
-                return storage_.unsafeAt(begin_ + index);
-            }
-
-            /*!
-             * Obtain a constant iterator to the first element in the slice.
-             */
-            const_iterator cbegin() const noexcept
-            {
-                return storage_.unsafeGetIteratorAt(begin_);
-            }
-
-            /*!
-             * Obtain a constant iterator to the first beyond the slice.
-             */
-            const_iterator cend() const noexcept
-            {
-                return storage_.unsafeGetIteratorAt(end_);
-            }
-
-            /*!
-             * Create a constant sub-slice with the given bounds (with respect
-             * to the current slice).
-             *
-             * @tparam slice_type  Type of the slice that this function shall
-             * return. Provide it with the type of the class that derives from
-             * mutable_slice_base.
-             */
-            template <typename slice_type>
-            slice_type subSlice(size_t begin, size_t end) const
-            {
-                this->rangeCheck(begin);
-                // end == size() is a legal value, since end is the first
-                // element beyond the slice
-                // end == 0 is not a legal value (subtraction will underflow and
-                // throw an exception)
-                this->rangeCheck(end - 1);
-                // additions are safe, begin and end are smaller than size()
-                const size_t new_begin = begin + this->begin_;
-                const size_t new_end = this->begin_ + end;
-                if (new_end > this->end_) {
-                    throw std::out_of_range("Invalid input parameters to slice");
-                }
-                return slice_type(storage_.data_, new_begin, new_end);
-            }
-
-        protected:
-            /*!
-             * Stores a reference to the actual data.
-             */
-            storage_type<data_type> storage_;
-        };
-
-        /*!
-         * This class provides all public-facing non-const-qualified methods of
-         * slices. It only re-implements the const-qualified versions as
-         * non-const.
-         */
-        template <template <typename> class storage_type, typename data_type>
-        struct MutableSliceBase : public ConstSliceBase<storage_type, data_type>
-        {
-            typedef typename ConstSliceBase<storage_type, data_type>::iterator iterator;
-            typedef typename ConstSliceBase<storage_type, data_type>::const_iterator const_iterator;
-            typedef typename ConstSliceBase<storage_type, data_type>::value_type value_type;
-
-            /*!
-             * Forwards everything to the constructor of const_slice_base
-             *
-             * @todo use using once we have C++11
-             */
-            MutableSliceBase(data_type& data, size_t begin, size_t end)
-                : ConstSliceBase<storage_type, data_type>(data, begin, end)
-            {
-            }
-
-            /*!
-             * Obtain a reference to the element with the specified index in the
-             * slice.
-             *
-             * @throw std::out_of_range when index is out of bounds of the slice
-             */
-            value_type& at(size_t index)
-            {
-                this->rangeCheck(index);
-                return this->storage_.unsafeAt(this->begin_ + index);
-            }
-
-            const value_type& at(size_t index) const
-            {
-                // TODO: use using base_type::at once we have C++11
-                return base_type::at(index);
-            }
-
-            /*!
-             * Obtain an iterator to the first element in the slice.
-             */
-            iterator begin() noexcept
-            {
-                return this->storage_.unsafeGetIteratorAt(this->begin_);
-            }
-
-            /*!
-             * Obtain an iterator to the first element beyond the slice.
-             */
-            iterator end() noexcept
-            {
-                return this->storage_.unsafeGetIteratorAt(this->end_);
-            }
-
-        protected:
-            /*!
-             * Explicitly convert this instance into a base-class of the
-             * appropriate constant version of this slice.
-             *
-             * This function is required to properly implement the `subSlice()
-             * const` function for mutable slices. The problem here is, that a
-             * slice<T> and a slice<const T> actually don't share the same base
-             * class `ConstSliceBase<storage_type, T>`. Instead `slice<T>`
-             * inherits from `ConstSliceBase<storage_type, T>` and `slice<const
-             * T>` inherits from `ConstSliceBase<storage_type, const T>`.
-             *
-             * Now, `slice<T>` can call the `subSlice() const` method from its
-             * base class, but that will return a mutable `slice<T>`! Instead we
-             * use this function to convert the ``slice<T>` into the parent of
-             * the appropriate `slice<const T>` and call its `subSlice() const`,
-             * which returns the correct type.
-             */
-            ConstSliceBase<storage_type, const data_type> to_const_base() const noexcept
-            {
-                return ConstSliceBase<storage_type, const data_type>(this->storage_.data_, this->begin_, this->end_);
-            }
-
-            typedef ConstSliceBase<storage_type, data_type> base_type;
-
-            /*!
-             * Create a mutable sub-slice with the given bounds (with respect to
-             * the current slice).
-             *
-             * @tparam slice_type  Type of the slice that this function shall
-             * return. Provide it with the type of the class that derives from
-             * mutable_slice_base.
-             */
-            template <typename slice_type>
-            slice_type subSlice(size_t begin, size_t end)
-            {
-                this->rangeCheck(begin);
-                // end == size() is a legal value, since end is the first
-                // element beyond the slice
-                // end == 0 is not a legal value (subtraction will underflow and
-                // throw an exception)
-                this->rangeCheck(end - 1);
-
-                // additions are safe, begin & end are smaller than size()
-                const size_t new_begin = begin + this->begin_;
-                const size_t new_end = this->begin_ + end;
-                if (new_end > this->end_) {
-                    throw std::out_of_range("Invalid input parameters to slice");
-                }
-                return slice_type(this->storage_.data_, new_begin, new_end);
-            }
-        };
-
-        /*!
-         * Implementation of the storage concept for STL-containers.
-         *
-         * @tparam container  Type of the STL-container.
-         */
-        template <typename container>
-        struct ContainerStorage
-        {
-            typedef typename container::iterator iterator;
-
-            typedef typename container::const_iterator const_iterator;
-
-            typedef typename Internal::remove_cv<typename container::value_type>::type value_type;
-
-            /*!
-             * @throw std::out_of_range when end is larger than the container's
-             * size.
-             */
-            ContainerStorage(container& data, size_t /* begin*/, size_t end) : data_(data)
-            {
-                if (end > data.size()) {
-                    throw std::out_of_range("Invalid input parameters to slice");
-                }
-            }
-
-            /*!
-             * Obtain a constant reference to the element with the given `index`
-             * in the container.
-             *
-             * @throw whatever container::at() throws
-             */
-            const value_type& unsafeAt(size_t index) const
-            {
-                return data_.at(index);
-            }
-
-            value_type& unsafeAt(size_t index)
-            {
-                return data_.at(index);
-            }
-
-            /*!
-             * Obtain an iterator at the position of the element with the given
-             * index in the container.
-             *
-             * @throw whatever container::begin() and std::advance() throw
-             */
-            iterator unsafeGetIteratorAt(size_t index)
-            {
-                // we are screwed if the container got changed => try to catch it
-                assert(index <= data_.size());
-
-                iterator it = data_.begin();
-                std::advance(it, index);
-                return it;
-            }
-
-            const_iterator unsafeGetIteratorAt(size_t index) const
-            {
-                assert(index <= data_.size());
-
-                const_iterator it = data_.begin();
-                std::advance(it, index);
-                return it;
-            }
-
-            container& data_;
-        };
-
-        /*!
-         * @brief Implementation of the storage concept for slices of C arrays.
-         *
-         * @tparam storage_type  Type as which the C-array should be stored. Use
-         * this parameter to save constant arrays as `const` and mutable ones as
-         * non-`const`.
-         */
-        template <typename storage_type>
-        struct PtrSliceStorage
-        {
-            typedef typename remove_cv<typename remove_pointer<storage_type>::type>::type value_type;
-            typedef value_type* iterator;
-            typedef const value_type* const_iterator;
-
-            /*!
-             * Stores ptr and checks that it is not `nullptr`. The slice's bounds
-             * are ignored, as we do not know the array's length.
-             *
-             * @throw std::invalid_argument when ptr is `nullptr`
-             */
-            PtrSliceStorage(storage_type ptr, size_t /*begin*/, size_t /*end*/) : data_(ptr)
-            {
-                if (ptr == nullptr) {
-                    throw std::invalid_argument("Null pointer passed to slice constructor");
-                }
-            }
-
-            /*!
-             * Obtain a reference to the element with the given `index` in the
-             * array.
-             *
-             * @throw nothing
-             */
-            value_type& unsafeAt(size_t index) noexcept
-            {
-                return data_[index];
-            }
-
-            const value_type& unsafeAt(size_t index) const noexcept
-            {
-                return data_[index];
-            }
-
-            /*!
-             * Obtain an iterator (=pointer) at the position of the element with
-             * the given index in the container.
-             *
-             * @throw nothing
-             */
-            iterator unsafeGetIteratorAt(size_t index) noexcept
-            {
-                return data_ + index;
-            }
-
-            const_iterator unsafeGetIteratorAt(size_t index) const noexcept
-            {
-                return data_ + index;
-            }
-
-            storage_type data_;
-        };
-
-    }  // namespace Internal
+    }   // namespace Internal
+#endif  // PARSED_BY_DOXYGEN
 
     /*!
      * @brief Slice (= view) for STL containers.
@@ -525,13 +163,13 @@ namespace Exiv2
      * array-like access via the `at()` method.
      */
     template <typename container>
-    struct Slice : public Internal::MutableSliceBase<Internal::ContainerStorage, container>
+    struct Slice : Internal::SliceBase
     {
         typedef typename container::iterator iterator;
 
         typedef typename container::const_iterator const_iterator;
 
-        typedef typename Internal::remove_cv<typename container::value_type>::type value_type;
+        typedef typename std::remove_cv<typename container::value_type>::type value_type;
 
         /*!
          * @brief Construct a slice of the container `cont` starting at `begin`
@@ -549,58 +187,141 @@ namespace Exiv2
          * than `begin` (they cannot be equal) it is impossible to construct a
          * slice with zero length.
          */
-        Slice(container& cont, size_t begin, size_t end)
-            : Internal::MutableSliceBase<Internal::ContainerStorage, container>(cont, begin, end)
+        Slice(container& cont, size_t begin, size_t end) : Internal::SliceBase(begin, end), cont_(cont)
         {
+            if (end > cont.size()) {
+                throw std::out_of_range("End must not be larger than the container.");
+            }
         }
+
+        /*!
+         * Obtain a constant reference to the element with the given `index` in
+         * the container.
+         *
+         * @throw whatever container::at() throws
+         */
+        const value_type& at(size_t index) const
+        {
+            rangeCheck(index);
+            // we know: begin_ < end <= size() <= SIZE_T_MAX
+            // and: index < end - begin
+            // thus: index + begin < end <= SIZE_T_MAX
+            // => no overflow is possible
+            return cont_.at(begin_ + index);
+        }
+
+        /*!
+         * Obtain a mutable reference to the element with the given `index` in
+         * the container.
+         * Please note that this function is unavailable in constant slices.
+         *
+         * @throw whatever container::at() throws.
+         */
+#ifdef PARSED_BY_DOXYGEN
+        value_type&
+#else
+        template <typename Dummy = container>
+        typename std::enable_if<!std::is_const<Dummy>::value, value_type>::type&
+#endif
+        at(size_t index)
+        {
+            rangeCheck(index);
+            // we know: begin_ < end <= size() <= SIZE_T_MAX
+            // and: index < end - begin
+            // thus: index + begin < end <= SIZE_T_MAX
+            // => no overflow is possible
+            return cont_.at(begin_ + index);
+        }
+
+#ifndef PARSED_BY_DOXYGEN
+#define RETURN_ITERATOR(getter_method, offset) \
+    auto iter = cont_.getter_method();         \
+    std::advance(iter, offset);                \
+    return iter
+#endif
+
+        const_iterator cbegin() const
+        {
+            RETURN_ITERATOR(cbegin, this->begin_);
+        }
+
+#ifdef PARSED_BY_DOXYGEN
+        iterator
+#else
+        template <typename Dummy = container>
+        typename std::enable_if<!std::is_const<Dummy>::value, iterator>::type
+#endif
+        begin()
+        {
+            RETURN_ITERATOR(begin, this->begin_);
+        }
+
+        const_iterator begin() const
+        {
+            RETURN_ITERATOR(begin, this->begin_);
+        }
+
+        const_iterator cend() const
+        {
+            RETURN_ITERATOR(cbegin, this->end_);
+        }
+
+#ifdef PARSED_BY_DOXYGEN
+        iterator
+#else
+        template <typename Dummy = container>
+        typename std::enable_if<!std::is_const<Dummy>::value, iterator>::type
+#endif
+        end()
+        {
+            RETURN_ITERATOR(begin, this->end_);
+        }
+
+        const_iterator end() const
+        {
+            RETURN_ITERATOR(begin, this->end_);
+        }
+
+#ifndef PARSED_BY_DOXYGEN
+#undef RETURN_ITERATOR
+#endif
 
         /*!
          * Construct a sub-slice of this slice with the given bounds. The bounds
          * are evaluated with respect to the current slice.
+         *
+         * Note: the non-const overload is only available when the container is
+         * also not const.
          *
          * @param[in] begin  First element in the new slice.
          * @param[in] end  First element beyond the new slice.
          *
          * @throw std::out_of_range when begin or end are invalid
          */
-        Slice subSlice(size_t begin, size_t end)
+#ifdef PARSED_BY_DOXYGEN
+        Slice<container>
+#else
+        template <typename Dummy = container>
+        typename std::enable_if<!std::is_const<Dummy>::value, Slice<container> >::type
+#endif
+        subSlice(size_t begin, size_t end)
         {
-            return Internal::MutableSliceBase<Internal::ContainerStorage, container>::template subSlice<Slice>(begin,
-                                                                                                               end);
+            this->calculateSubSliceBounds(begin, end);
+            return Slice(cont_, begin, end);
         }
 
         /*!
          * Constructs a new constant subSlice. Behaves otherwise exactly like
          * the non-const version.
          */
-        Slice<const container> subSlice(size_t begin, size_t end) const
+        Slice<container> subSlice(size_t begin, size_t end) const
         {
-            return this->to_const_base().template subSlice<Slice<const container> >(begin, end);
-        }
-    };
-
-    /*!
-     * @brief Specialization of slices for constant containers.
-     */
-    template <typename container>
-    struct Slice<const container> : public Internal::ConstSliceBase<Internal::ContainerStorage, const container>
-    {
-        typedef typename container::iterator iterator;
-
-        typedef typename container::const_iterator const_iterator;
-
-        typedef typename Internal::remove_cv<typename container::value_type>::type value_type;
-
-        Slice(const container& cont, size_t begin, size_t end)
-            : Internal::ConstSliceBase<Internal::ContainerStorage, const container>(cont, begin, end)
-        {
+            this->calculateSubSliceBounds(begin, end);
+            return Slice<container>(cont_, begin, end);
         }
 
-        Slice subSlice(size_t begin, size_t end) const
-        {
-            return Internal::ConstSliceBase<Internal::ContainerStorage,
-                                            const container>::template subSlice<Slice<const container> >(begin, end);
-        }
+    private:
+        container& cont_;
     };
 
     /*!
@@ -612,8 +333,15 @@ namespace Exiv2
      * swap begin and end!
      */
     template <typename T>
-    struct Slice<const T*> : public Internal::ConstSliceBase<Internal::PtrSliceStorage, const T*>
+    struct Slice<T*> : Internal::SliceBase
     {
+        typedef typename std::remove_cv<T>::type value_type;
+
+        typedef typename std::conditional<std::is_const<T>::value, typename std::add_const<value_type>::type*,
+                                          value_type*>::type iterator;
+
+        typedef const typename std::remove_cv<T>::type* const_iterator;
+
         /*!
          * Constructor.
          *
@@ -626,40 +354,101 @@ namespace Exiv2
          * Please note that the constructor has no way how to verify that
          * `begin` and `end` are not out of bounds of the provided array!
          */
-        Slice(const T* ptr, size_t begin, size_t end)
-            : Internal::ConstSliceBase<Internal::PtrSliceStorage, const T*>(ptr, begin, end)
+        Slice(T* ptr, size_t begin, size_t end) : Internal::SliceBase(begin, end), ptr_(ptr)
         {
-            // TODO: use using in C++11
+            if (ptr == nullptr) {
+                throw std::invalid_argument("ptr must not be null.");
+            }
+        }
+
+        const value_type& at(size_t index) const
+        {
+            rangeCheck(index);
+            // we know: begin_ < end <= size() <= SIZE_T_MAX
+            // and: index < end - begin
+            // thus: index + begin < end <= SIZE_T_MAX
+            // => no overflow is possible
+            return ptr_[begin_ + index];
+        }
+
+#ifdef PARSED_BY_DOXYGEN
+        value_type&
+#else
+        template <typename Dummy = T>
+        typename std::enable_if<!std::is_const<Dummy>::value, value_type>::type&
+#endif
+        at(size_t index)
+        {
+            rangeCheck(index);
+            // we know: begin_ < end <= size() <= SIZE_T_MAX
+            // and: index < end - begin
+            // thus: index + begin < end <= SIZE_T_MAX
+            // => no overflow is possible
+            return ptr_[begin_ + index];
+        }
+
+        const_iterator cbegin() const noexcept
+        {
+            return ptr_ + begin_;
+        }
+
+#ifdef PARSED_BY_DOXYGEN
+        iterator
+#else
+        template <typename Dummy = T>
+        typename std::enable_if<!std::is_const<Dummy>::value, iterator>::type
+#endif
+        begin() noexcept
+        {
+            return ptr_ + begin_;
+        }
+
+        const_iterator begin() const noexcept
+        {
+            return ptr_ + begin_;
+        }
+
+        const_iterator cend() const noexcept
+        {
+            return ptr_ + end_;
+        }
+
+#ifdef PARSED_BY_DOXYGEN
+        iterator
+#else
+        template <typename Dummy = T>
+        typename std::enable_if<!std::is_const<Dummy>::value, iterator>::type
+#endif
+        end() noexcept
+        {
+            return ptr_ + end_;
+        }
+
+        const_iterator end() const noexcept
+        {
+            return ptr_ + end_;
+        }
+
+#ifdef PARSED_BY_DOXYGEN
+        Slice<T*>
+#else
+        template <typename Dummy = T>
+        typename std::enable_if<!std::is_const<Dummy>::value, Slice<T*> >::type
+#endif
+        subSlice(size_t begin, size_t end)
+        {
+            this->calculateSubSliceBounds(begin, end);
+            return Slice<T*>(ptr_, begin, end);
         }
 
         Slice<const T*> subSlice(size_t begin, size_t end) const
         {
-            return Internal::ConstSliceBase<Internal::PtrSliceStorage, const T*>::template subSlice<Slice<const T*> >(
-                begin, end);
-        }
-    };
-
-    /*!
-     * Specialization of slices for (mutable) C-arrays.
-     */
-    template <typename T>
-    struct Slice<T*> : public Internal::MutableSliceBase<Internal::PtrSliceStorage, T*>
-    {
-        Slice(T* ptr, size_t begin, size_t end)
-            : Internal::MutableSliceBase<Internal::PtrSliceStorage, T*>(ptr, begin, end)
-        {
-            // TODO: use using in C++11
+            this->calculateSubSliceBounds(begin, end);
+            return Slice<const T*>(ptr_, begin, end);
         }
 
-        Slice<T*> subSlice(size_t begin, size_t end)
-        {
-            return Internal::MutableSliceBase<Internal::PtrSliceStorage, T*>::template subSlice<Slice<T*> >(begin, end);
-        }
-
-        Slice<const T*> subSlice(size_t begin, size_t end) const
-        {
-            return this->to_const_base().template subSlice<Slice<const T*> >(begin, end);
-        }
+    private:
+        T* ptr_;
     };
 
     /*!
